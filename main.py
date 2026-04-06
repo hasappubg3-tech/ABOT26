@@ -20,7 +20,7 @@ TYPE_MAP = {
     "📄 محتوى": "content",
 }
 
-ADMIN_BTNS   = {BTN_ADD, BTN_MANAGE, BTN_ADMINS}
+ADMIN_BTNS   = {BTN_MANAGE, BTN_ADMINS}
 SPECIAL_BTNS = {BTN_BACK, BTN_ADD, BTN_MANAGE, BTN_ADMINS, BTN_CANCEL} | set(TYPE_MAP.keys())
 
 # ── قاعدة البيانات ────────────────────────────────────────────────
@@ -97,7 +97,7 @@ def add_btn(pid, t, label):
                 (pid, t, label, len(ids) + 1))
     lid = cur.lastrowid; c.commit(); c.close(); return lid
 
-def add_btn_after(after_bid, pid, t, label):
+def add_btn_after(after_bid, pid, t, label, new_row=1):
     """يضيف زراً بعد after_bid، أو في البداية إذا كان after_bid=None."""
     c = db(); cur = c.cursor()
     ids = _siblings(cur, pid)
@@ -105,8 +105,8 @@ def add_btn_after(after_bid, pid, t, label):
         pos = 0
     else:
         pos = (ids.index(after_bid) + 1) if after_bid in ids else len(ids)
-    cur.execute("INSERT INTO buttons(parent_id,type,label,ord) VALUES(?,?,?,?)",
-                (pid, t, label, 0))
+    cur.execute("INSERT INTO buttons(parent_id,type,label,ord,new_row) VALUES(?,?,?,?,?)",
+                (pid, t, label, 0, new_row))
     new_id = cur.lastrowid
     ids.insert(pos, new_id)
     _renumber(cur, ids)
@@ -118,11 +118,6 @@ def upd_btn_label(bid, label):
 def del_btn(bid):
     c = db(); c.execute("DELETE FROM buttons WHERE id=?", (bid,)); c.commit(); c.close()
 
-def toggle_btn_row(bid):
-    """تبديل حالة بداية السطر للزر (دمج/فصل مع الزر السابق)."""
-    c = db()
-    c.execute("UPDATE buttons SET new_row = 1 - new_row WHERE id=?", (bid,))
-    c.commit(); c.close()
 
 def move_btn(bid, direction):
     c = db(); cur = c.cursor()
@@ -191,7 +186,7 @@ def build_kb(uid, pid=None):
     if pid is not None:
         rows.append([KeyboardButton(BTN_BACK)])
     if is_admin(uid):
-        rows.append([KeyboardButton(BTN_ADD), KeyboardButton(BTN_MANAGE), KeyboardButton(BTN_ADMINS)])
+        rows.append([KeyboardButton(BTN_MANAGE), KeyboardButton(BTN_ADMINS)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True) if (rows or is_admin(uid)) else None
 
 def build_type_kb():
@@ -207,24 +202,14 @@ def kb_manage(pid=None):
     btns = get_buttons(pid)
     if btns:
         rows.append([InlineKeyboardButton("➕ إضافة في البداية", callback_data=f"add_first_{ctx}")])
-    for i, b in enumerate(btns):
-        if i > 0:
-            if b.get('new_row', 1):
-                rows.append([InlineKeyboardButton(
-                    "↕️ سطر منفصل  —  اضغط لوضعه بنفس سطر الزر أعلاه",
-                    callback_data=f"row_toggle_{b['id']}"
-                )])
-            else:
-                rows.append([InlineKeyboardButton(
-                    "↔️ في نفس السطر  —  اضغط لنقله لسطر منفصل",
-                    callback_data=f"row_toggle_{b['id']}"
-                )])
+    for b in btns:
         rows.append([
             InlineKeyboardButton(b['label'], callback_data=f"e_{b['id']}"),
             InlineKeyboardButton("⬆️", callback_data=f"u_{b['id']}"),
             InlineKeyboardButton("⬇️", callback_data=f"d_{b['id']}"),
             InlineKeyboardButton("🗑", callback_data=f"x_{b['id']}"),
-            InlineKeyboardButton("➕", callback_data=f"add_after_{b['id']}"),
+            InlineKeyboardButton("➕↕", callback_data=f"add_after_{b['id']}"),
+            InlineKeyboardButton("➕↔", callback_data=f"add_same_{b['id']}"),
         ])
     rows.append([InlineKeyboardButton("➕ إضافة في النهاية", callback_data=f"add_{ctx}")])
     if pid is not None:
@@ -278,17 +263,6 @@ def kb_admins_inline():
 def kb_cancel_inline():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="cancel")]])
 
-def kb_choose_position(pid=None):
-    """لوحة اختيار موضع الإضافة."""
-    ctx = "r" if pid is None else str(pid)
-    btns = get_buttons(pid)
-    rows = []
-    rows.append([InlineKeyboardButton("⬆️ في البداية", callback_data=f"pos_first_{ctx}")])
-    for b in btns:
-        rows.append([InlineKeyboardButton(f"↳ بعد  {b['label']}", callback_data=f"pos_after_{b['id']}")])
-    rows.append([InlineKeyboardButton("⬇️ في النهاية", callback_data=f"pos_end_{ctx}")])
-    rows.append([InlineKeyboardButton("❌ إلغاء", callback_data="cancel")])
-    return InlineKeyboardMarkup(rows)
 
 # ── مساعد اللوحة الثابتة ─────────────────────────────────────────
 async def set_panel(ctx, chat_id, text, markup=None):
@@ -351,14 +325,16 @@ async def on_message(update: Update, ctx):
         t = ctx.user_data.get("new_type"); add_pid = ctx.user_data.get("add_pid")
         add_after = ctx.user_data.get("add_after", "END")
         add_position = ctx.user_data.get("add_position")
-        if add_position == "first" or (add_after != "END" and "add_position" in ctx.user_data):
+        add_same_row = ctx.user_data.get("add_same_row", False)
+        if add_position == "first":
             bid = add_btn_after(None, add_pid, t, text)
         elif add_after != "END":
-            bid = add_btn_after(add_after, add_pid, t, text)
+            bid = add_btn_after(add_after, add_pid, t, text, new_row=0 if add_same_row else 1)
         else:
             bid = add_btn(add_pid, t, text)
         ctx.user_data.pop("state", None); ctx.user_data.pop("new_type", None)
         ctx.user_data.pop("add_after", None); ctx.user_data.pop("add_position", None)
+        ctx.user_data.pop("add_same_row", None)
         if t == "menu":
             await m.reply_text(f"✅ تم إنشاء القائمة *{text}*", parse_mode="Markdown",
                                reply_markup=build_kb(uid, pid))
@@ -453,16 +429,6 @@ async def on_message(update: Update, ctx):
 
     # ── أزرار المشرف ──────────────────────────────────────────────
     if is_admin(uid):
-        if text == BTN_ADD:
-            ctx.user_data["add_pid"] = pid
-            existing = get_buttons(pid)
-            if existing:
-                await set_panel(ctx, chat_id, "📍 اختر موضع الإضافة:", kb_choose_position(pid))
-            else:
-                ctx.user_data["state"] = "wait_type"
-                ctx.user_data.pop("add_after", None); ctx.user_data.pop("add_position", None)
-                await m.reply_text("اختر نوع الزر:", reply_markup=build_type_kb())
-            return
         if text == BTN_MANAGE:
             await set_panel(ctx, chat_id, "⚙️ *إدارة الأزرار*:", kb_manage(pid))
             return
@@ -549,35 +515,14 @@ async def cb_manage(update: Update, ctx):
         await q.edit_message_text("⚙️ *إدارة الأزرار*:", parse_mode="Markdown",
                                   reply_markup=kb_manage(ep)); return
 
-    # ── تبديل دمج/فصل السطر ──────────────────────────────────────
-    if d.startswith("row_toggle_"):
-        bid = int(d[11:]); b = get_btn(bid)
-        toggle_btn_row(bid)
-        await q.edit_message_reply_markup(reply_markup=kb_manage(b["parent_id"] if b else None))
-        return
-
-    # ── اختيار موضع الإضافة من لوح الإضافة ──────────────────────
-    if d.startswith("pos_first_"):
-        pctx = d[10:]; ep = None if pctx == "r" else int(pctx)
-        ctx.user_data["state"] = "wait_type"
-        ctx.user_data["add_pid"] = ep
-        ctx.user_data["add_after"] = None
-        ctx.user_data["add_position"] = "first"
-        await q.message.reply_text("اختر نوع الزر:", reply_markup=build_type_kb()); return
-
-    if d.startswith("pos_after_"):
-        after_bid = int(d[10:]); b = get_btn(after_bid)
+    # ── إضافة بجانب زر (نفس السطر) ──────────────────────────────
+    if d.startswith("add_same_"):
+        after_bid = int(d[9:]); b = get_btn(after_bid)
         ctx.user_data["state"] = "wait_type"
         ctx.user_data["add_pid"] = b["parent_id"] if b else None
         ctx.user_data["add_after"] = after_bid
+        ctx.user_data["add_same_row"] = True
         ctx.user_data.pop("add_position", None)
-        await q.message.reply_text("اختر نوع الزر:", reply_markup=build_type_kb()); return
-
-    if d.startswith("pos_end_"):
-        pctx = d[8:]; ep = None if pctx == "r" else int(pctx)
-        ctx.user_data["state"] = "wait_type"
-        ctx.user_data["add_pid"] = ep
-        ctx.user_data.pop("add_after", None); ctx.user_data.pop("add_position", None)
         await q.message.reply_text("اختر نوع الزر:", reply_markup=build_type_kb()); return
 
     # ── إضافة من لوحة الإدارة (في النهاية) ──────────────────────
