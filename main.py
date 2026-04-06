@@ -72,14 +72,39 @@ def get_btn(bid):
     r = db().execute("SELECT * FROM buttons WHERE id=?", (bid,)).fetchone()
     return dict(r) if r else None
 
-def add_btn(pid, t, label):
-    c = db(); cur = c.cursor()
+def _siblings(cur, pid):
     if pid is None:
-        n = cur.execute("SELECT COALESCE(MAX(ord),0)+1 FROM buttons WHERE parent_id IS NULL").fetchone()[0]
+        return [r[0] for r in cur.execute(
+            "SELECT id FROM buttons WHERE parent_id IS NULL ORDER BY ord,id").fetchall()]
+    return [r[0] for r in cur.execute(
+        "SELECT id FROM buttons WHERE parent_id=? ORDER BY ord,id", (pid,)).fetchall()]
+
+def _renumber(cur, ids):
+    for i, bid in enumerate(ids):
+        cur.execute("UPDATE buttons SET ord=? WHERE id=?", (i + 1, bid))
+
+def add_btn(pid, t, label):
+    """يضيف زراً في نهاية القائمة."""
+    c = db(); cur = c.cursor()
+    ids = _siblings(cur, pid)
+    cur.execute("INSERT INTO buttons(parent_id,type,label,ord) VALUES(?,?,?,?)",
+                (pid, t, label, len(ids) + 1))
+    lid = cur.lastrowid; c.commit(); c.close(); return lid
+
+def add_btn_after(after_bid, pid, t, label):
+    """يضيف زراً بعد after_bid، أو في البداية إذا كان after_bid=None."""
+    c = db(); cur = c.cursor()
+    ids = _siblings(cur, pid)
+    if after_bid is None:
+        pos = 0
     else:
-        n = cur.execute("SELECT COALESCE(MAX(ord),0)+1 FROM buttons WHERE parent_id=?", (pid,)).fetchone()[0]
-    cur.execute("INSERT INTO buttons(parent_id,type,label,ord) VALUES(?,?,?,?)", (pid, t, label, n))
-    c.commit(); lid = cur.lastrowid; c.close(); return lid
+        pos = (ids.index(after_bid) + 1) if after_bid in ids else len(ids)
+    cur.execute("INSERT INTO buttons(parent_id,type,label,ord) VALUES(?,?,?,?)",
+                (pid, t, label, 0))
+    new_id = cur.lastrowid
+    ids.insert(pos, new_id)
+    _renumber(cur, ids)
+    c.commit(); c.close(); return new_id
 
 def upd_btn_label(bid, label):
     c = db(); c.execute("UPDATE buttons SET label=? WHERE id=?", (label, bid)); c.commit(); c.close()
@@ -91,16 +116,11 @@ def move_btn(bid, direction):
     c = db(); cur = c.cursor()
     row = dict(cur.execute("SELECT * FROM buttons WHERE id=?", (bid,)).fetchone())
     pid = row["parent_id"]
-    if pid is None:
-        ids = [r[0] for r in cur.execute("SELECT id FROM buttons WHERE parent_id IS NULL ORDER BY ord,id").fetchall()]
-    else:
-        ids = [r[0] for r in cur.execute("SELECT id FROM buttons WHERE parent_id=? ORDER BY ord,id", (pid,)).fetchall()]
+    ids = _siblings(cur, pid)
     i = ids.index(bid); j = i - 1 if direction == "up" else i + 1
     if not (0 <= j < len(ids)): c.close(); return
-    o1 = cur.execute("SELECT ord FROM buttons WHERE id=?", (bid,)).fetchone()[0]
-    o2 = cur.execute("SELECT ord FROM buttons WHERE id=?", (ids[j],)).fetchone()[0]
-    cur.execute("UPDATE buttons SET ord=? WHERE id=?", (o2, bid))
-    cur.execute("UPDATE buttons SET ord=? WHERE id=?", (o1, ids[j]))
+    ids[i], ids[j] = ids[j], ids[i]
+    _renumber(cur, ids)
     c.commit(); c.close()
 
 # ── content_items ─────────────────────────────────────────────────
@@ -161,16 +181,20 @@ def build_type_kb():
 
 # ── لوحات Inline ─────────────────────────────────────────────────
 def kb_manage(pid=None):
+    ctx = "r" if pid is None else str(pid)
     rows = []
+    btns = get_buttons(pid)
+    if btns:
+        rows.append([InlineKeyboardButton("➕ إضافة في البداية", callback_data=f"add_first_{ctx}")])
     for b in get_buttons(pid):
         rows.append([
             InlineKeyboardButton(b['label'], callback_data=f"e_{b['id']}"),
             InlineKeyboardButton("⬆️", callback_data=f"u_{b['id']}"),
             InlineKeyboardButton("⬇️", callback_data=f"d_{b['id']}"),
             InlineKeyboardButton("🗑", callback_data=f"x_{b['id']}"),
+            InlineKeyboardButton("➕", callback_data=f"add_after_{b['id']}"),
         ])
-    ctx = "r" if pid is None else str(pid)
-    rows.append([InlineKeyboardButton("➕ إضافة هنا", callback_data=f"add_{ctx}")])
+    rows.append([InlineKeyboardButton("➕ إضافة في النهاية", callback_data=f"add_{ctx}")])
     if pid is not None:
         b = get_btn(pid); back = b["parent_id"] if b else None
         rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="m_r" if back is None else f"m_{back}")])
@@ -281,8 +305,16 @@ async def on_message(update: Update, ctx):
         if not text or text in SPECIAL_BTNS:
             await m.reply_text("⚠️ أرسل نصاً صحيحاً للاسم."); return
         t = ctx.user_data.get("new_type"); add_pid = ctx.user_data.get("add_pid")
-        bid = add_btn(add_pid, t, text)
+        add_after = ctx.user_data.get("add_after", "END")
+        add_position = ctx.user_data.get("add_position")
+        if add_position == "first" or (add_after != "END" and "add_position" in ctx.user_data):
+            bid = add_btn_after(None, add_pid, t, text)
+        elif add_after != "END":
+            bid = add_btn_after(add_after, add_pid, t, text)
+        else:
+            bid = add_btn(add_pid, t, text)
         ctx.user_data.pop("state", None); ctx.user_data.pop("new_type", None)
+        ctx.user_data.pop("add_after", None); ctx.user_data.pop("add_position", None)
         if t == "menu":
             await m.reply_text(f"✅ تم إنشاء القائمة *{text}*", parse_mode="Markdown",
                                reply_markup=build_kb(uid, pid))
@@ -467,10 +499,26 @@ async def cb_manage(update: Update, ctx):
         await q.edit_message_text("⚙️ *إدارة الأزرار*:", parse_mode="Markdown",
                                   reply_markup=kb_manage(ep)); return
 
-    # ── إضافة من لوحة الإدارة ─────────────────────────────────────
+    # ── إضافة من لوحة الإدارة (في النهاية) ──────────────────────
+    if d.startswith("add_after_"):
+        after_bid = int(d[10:]); b = get_btn(after_bid)
+        ctx.user_data["state"] = "wait_type"
+        ctx.user_data["add_pid"] = b["parent_id"] if b else None
+        ctx.user_data["add_after"] = after_bid
+        await q.message.reply_text("اختر نوع الزر:", reply_markup=build_type_kb()); return
+
+    if d.startswith("add_first_"):
+        pctx = d[10:]; ep = None if pctx == "r" else int(pctx)
+        ctx.user_data["state"] = "wait_type"
+        ctx.user_data["add_pid"] = ep
+        ctx.user_data["add_after"] = None          # None = في البداية
+        ctx.user_data["add_position"] = "first"
+        await q.message.reply_text("اختر نوع الزر:", reply_markup=build_type_kb()); return
+
     if d.startswith("add_"):
         pctx = d[4:]; ep = None if pctx == "r" else int(pctx)
         ctx.user_data["state"] = "wait_type"; ctx.user_data["add_pid"] = ep
+        ctx.user_data.pop("add_after", None); ctx.user_data.pop("add_position", None)
         await q.message.reply_text("اختر نوع الزر:", reply_markup=build_type_kb()); return
 
     # ── تعديل اسم الزر ───────────────────────────────────────────
