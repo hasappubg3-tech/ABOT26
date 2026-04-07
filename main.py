@@ -451,7 +451,7 @@ async def on_message(update: Update, ctx):
             return
         wait_msg = await m.reply_text("⏳ جاري التواصل مع الذكاء الاصطناعي...")
         current_btns = get_buttons(pid)
-        action, buttons, insert, del_idx, error = await process_ai_request(request_text, current_btns)
+        action, operations, del_idx, error = await process_ai_request(request_text, current_btns)
         if error:
             await wait_msg.edit_text(error)
             return
@@ -471,37 +471,43 @@ async def on_message(update: Update, ctx):
                 result_lines.append(f"🗑 تم حذف {len(to_delete)} زر")
             current_btns = get_buttons(pid)   # تحديث القائمة بعد الحذف
 
-        # ── تنفيذ الإضافة ─────────────────────────────────────────
-        if action in ("add", "delete_then_add") and buttons:
-            if insert == "start":
-                anchor_id = None
-                use_after = True
-            elif isinstance(insert, int) and 0 <= insert < len(current_btns):
-                anchor_id = current_btns[insert]["id"]
-                use_after = True
-            else:
-                anchor_id = None
-                use_after = False
-            added = []
-            last_id = anchor_id
-            for btn in buttons:
-                label = btn.get("label", "").strip()
-                btype = btn.get("type", "menu")
-                new_row = btn.get("new_row", True)
-                if not label:
+        # ── تنفيذ الإضافة (عمليات متعددة) ────────────────────────
+        if action in ("add", "delete_then_add") and operations:
+            all_added = []
+            for op in operations:
+                insert  = op.get("insert", -1)
+                buttons = op.get("buttons", [])
+                if not buttons:
                     continue
-                if btype not in ("menu", "content"):
-                    btype = "menu"
-                nr = 0 if not new_row else 1
-                if last_id is None and not use_after:
-                    last_id = add_btn(pid, btype, label)
+                if insert == "start":
+                    anchor_id = None
+                    use_after = True
+                elif isinstance(insert, int) and 0 <= insert < len(current_btns):
+                    anchor_id = current_btns[insert]["id"]
+                    use_after = True
                 else:
-                    last_id = add_btn_after(last_id, pid, btype, label, new_row=nr)
-                use_after = True
-                added.append(f"{'📂' if btype == 'menu' else '📄'} {label}")
-            if added:
-                result_lines.append(f"✅ تمت إضافة {len(added)} زر:\n" +
-                                    "\n".join(f"  • {a}" for a in added))
+                    anchor_id = None
+                    use_after = False
+                last_id = anchor_id
+                for btn in buttons:
+                    label = btn.get("label", "").strip()
+                    btype = btn.get("type", "menu")
+                    new_row = btn.get("new_row", True)
+                    if not label:
+                        continue
+                    if btype not in ("menu", "content"):
+                        btype = "menu"
+                    nr = 0 if not new_row else 1
+                    if last_id is None and not use_after:
+                        last_id = add_btn(pid, btype, label)
+                    else:
+                        last_id = add_btn_after(last_id, pid, btype, label, new_row=nr)
+                    use_after = True
+                    all_added.append(f"{'📂' if btype == 'menu' else '📄'} {label}")
+                current_btns = get_buttons(pid)   # تحديث بعد كل عملية لضمان صحة الفهارس
+            if all_added:
+                result_lines.append(f"✅ تمت إضافة {len(all_added)} زر:\n" +
+                                    "\n".join(f"  • {a}" for a in all_added))
 
         if not result_lines:
             await wait_msg.edit_text("⚠️ لم يتم تنفيذ أي عملية.")
@@ -807,7 +813,10 @@ AI_SYSTEM_PROMPT = """أنت مساعد ذكي لبوت تلغرام يدير ق
 أرجع JSON صالح فقط بدون أي نص خارجه."""
 
 def _parse_ai_response(raw: str):
-    """يستخرج action والأزرار وموضع الإدراج وقائمة الحذف من JSON."""
+    """يستخرج action وقائمة العمليات وقائمة الحذف من JSON.
+    يُرجع: (action, operations, del_idx)
+    حيث operations = [{"insert": int|str, "buttons": list}, ...]
+    """
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
@@ -815,10 +824,22 @@ def _parse_ai_response(raw: str):
             raw = raw[4:]
     data = json.loads(raw.strip())
     action  = data.get("action", "add")
-    buttons = data.get("buttons", [])
-    insert  = data.get("insert_after_index", -1)
     del_idx = data.get("delete_indices", [])
-    return action, buttons, insert, del_idx
+
+    # دعم تنسيق operations (الجديد) وتنسيق buttons المسطح (القديم)
+    if "operations" in data:
+        operations = []
+        for op in data["operations"]:
+            operations.append({
+                "insert": op.get("insert_after_index", -1),
+                "buttons": op.get("buttons", []),
+            })
+    else:
+        operations = [{
+            "insert": data.get("insert_after_index", -1),
+            "buttons": data.get("buttons", []),
+        }]
+    return action, operations, del_idx
 
 async def _call_groq(client: httpx.AsyncClient, prompt: str):
     """يستدعي Groq API."""
@@ -850,9 +871,9 @@ async def _call_gemini(client: httpx.AsyncClient, prompt: str):
     return None
 
 async def process_ai_request(user_request: str, current_btns: list = None):
-    """يجرب Groq أولاً ثم Gemini. يُرجع (action, buttons, insert, del_idx, error)."""
+    """يجرب Groq أولاً ثم Gemini. يُرجع (action, operations, del_idx, error)."""
     if not GROQ_API_KEY and not GEMINI_API_KEY:
-        return None, None, -1, [], "❌ لم يُعَيَّن أي مفتاح AI."
+        return None, [], [], "❌ لم يُعَيَّن أي مفتاح AI."
 
     if current_btns:
         ctx_lines = [f"الأزرار الحالية الموجودة ({len(current_btns)} زر) مُجمَّعة حسب الأسطر:"]
@@ -881,10 +902,10 @@ async def process_ai_request(user_request: str, current_btns: list = None):
         if GROQ_API_KEY:
             try:
                 raw = await _call_groq(client, prompt)
-                action, buttons, insert, del_idx = _parse_ai_response(raw)
-                return action, buttons, insert, del_idx, None
+                action, operations, del_idx = _parse_ai_response(raw)
+                return action, operations, del_idx, None
             except json.JSONDecodeError:
-                return None, None, -1, [], "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
+                return None, [], [], "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
             except httpx.HTTPStatusError as e:
                 logging.warning(f"Groq error {e.response.status_code}: {e.response.text[:200]}")
             except Exception as e:
@@ -893,13 +914,13 @@ async def process_ai_request(user_request: str, current_btns: list = None):
             try:
                 raw = await _call_gemini(client, prompt)
                 if raw:
-                    action, buttons, insert, del_idx = _parse_ai_response(raw)
-                    return action, buttons, insert, del_idx, None
+                    action, operations, del_idx = _parse_ai_response(raw)
+                    return action, operations, del_idx, None
             except json.JSONDecodeError:
-                return None, None, -1, [], "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
+                return None, [], [], "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
             except Exception as e:
                 logging.warning(f"Gemini exception: {e}")
-    return None, None, -1, [], "⚠️ تعذّر الاتصال بالذكاء الاصطناعي. حاول مرة أخرى."
+    return None, [], [], "⚠️ تعذّر الاتصال بالذكاء الاصطناعي. حاول مرة أخرى."
 
 # ── إعداد البوت ──────────────────────────────────────────────────
 async def post_init(app):
