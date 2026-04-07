@@ -451,45 +451,62 @@ async def on_message(update: Update, ctx):
             return
         wait_msg = await m.reply_text("⏳ جاري التواصل مع الذكاء الاصطناعي...")
         current_btns = get_buttons(pid)
-        buttons, insert, error = await generate_buttons(request_text, current_btns)
+        action, buttons, insert, del_idx, error = await process_ai_request(request_text, current_btns)
         if error:
             await wait_msg.edit_text(error)
             return
-        # ── تحديد نقطة الإدراج ────────────────────────────────────
-        if insert == "start":
-            anchor_id = None        # add_btn_after(None) = في البداية
-            use_after = True
-        elif isinstance(insert, int) and 0 <= insert < len(current_btns):
-            anchor_id = current_btns[insert]["id"]
-            use_after = True
-        else:
-            anchor_id = None
-            use_after = False       # add_btn = في النهاية
-        added = []
-        last_id = anchor_id
-        for btn in buttons:
-            label = btn.get("label", "").strip()
-            btype = btn.get("type", "menu")
-            new_row = btn.get("new_row", True)
-            if not label:
-                continue
-            if btype not in ("menu", "content"):
-                btype = "menu"
-            nr = 0 if not new_row else 1
-            if last_id is None and not use_after:
-                last_id = add_btn(pid, btype, label)
+
+        result_lines = []
+
+        # ── تنفيذ الحذف ───────────────────────────────────────────
+        if action in ("delete_all", "delete_some", "delete_then_add"):
+            if action == "delete_all":
+                to_delete = [b["id"] for b in current_btns]
             else:
-                last_id = add_btn_after(last_id, pid, btype, label, new_row=nr)
-            use_after = True        # الأزرار التالية دائماً تُدرج بعد السابق
-            added.append(f"{'📂' if btype == 'menu' else '📄'} {label}")
-        if not added:
-            await wait_msg.edit_text("⚠️ لم تُضَف أي أزرار.")
+                to_delete = [current_btns[i]["id"] for i in del_idx
+                             if isinstance(i, int) and 0 <= i < len(current_btns)]
+            for bid in to_delete:
+                del_btn(bid)
+            if to_delete:
+                result_lines.append(f"🗑 تم حذف {len(to_delete)} زر")
+            current_btns = get_buttons(pid)   # تحديث القائمة بعد الحذف
+
+        # ── تنفيذ الإضافة ─────────────────────────────────────────
+        if action in ("add", "delete_then_add") and buttons:
+            if insert == "start":
+                anchor_id = None
+                use_after = True
+            elif isinstance(insert, int) and 0 <= insert < len(current_btns):
+                anchor_id = current_btns[insert]["id"]
+                use_after = True
+            else:
+                anchor_id = None
+                use_after = False
+            added = []
+            last_id = anchor_id
+            for btn in buttons:
+                label = btn.get("label", "").strip()
+                btype = btn.get("type", "menu")
+                new_row = btn.get("new_row", True)
+                if not label:
+                    continue
+                if btype not in ("menu", "content"):
+                    btype = "menu"
+                nr = 0 if not new_row else 1
+                if last_id is None and not use_after:
+                    last_id = add_btn(pid, btype, label)
+                else:
+                    last_id = add_btn_after(last_id, pid, btype, label, new_row=nr)
+                use_after = True
+                added.append(f"{'📂' if btype == 'menu' else '📄'} {label}")
+            if added:
+                result_lines.append(f"✅ تمت إضافة {len(added)} زر:\n" +
+                                    "\n".join(f"  • {a}" for a in added))
+
+        if not result_lines:
+            await wait_msg.edit_text("⚠️ لم يتم تنفيذ أي عملية.")
             return
-        summary = "\n".join(f"  • {a}" for a in added)
-        await wait_msg.edit_text(
-            f"✅ *تمت إضافة {len(added)} زر بواسطة الذكاء الاصطناعي:*\n\n{summary}",
-            parse_mode="Markdown"
-        )
+        await wait_msg.edit_text("\n\n".join(result_lines), parse_mode="Markdown")
         await m.reply_text("🔄", reply_markup=build_kb(uid, pid))
         return
 
@@ -733,49 +750,58 @@ async def cb_manage(update: Update, ctx):
 # ── خاصية الذكاء الاصطناعي (Gemini) ─────────────────────────────
 AI_SYSTEM_PROMPT = """أنت مساعد ذكي لبوت تلغرام يدير قوائم وأزرار تفاعلية.
 
-مهمتك: تحليل طلب المشرف والأزرار الحالية الموجودة، ثم إرجاع JSON فقط بهذا الشكل بدون أي نص إضافي:
+مهمتك: تحليل طلب المشرف والأزرار الحالية، ثم إرجاع JSON فقط بهذا الشكل بدون أي نص إضافي:
 {
+  "action": "add",
   "insert_after_index": -1,
+  "delete_indices": [],
   "buttons": [{"label": "اسم الزر", "type": "menu", "new_row": true}]
 }
 
-شرح insert_after_index:
-- رقم من 0 إلى N-1 (حيث N = عدد الأزرار الحالية): أضف الأزرار الجديدة بعد الزر رقم X في القائمة الحالية.
-- -1: أضف في النهاية (الافتراضي إن لم يُحدد مكان).
-- "start": أضف في البداية قبل كل الأزرار.
-- إذا قال المشرف "السطر الثاني" والأزرار الحالية لديها سطر أول يحتوي N زر، احسب الفهرس بعد آخر زر في السطر الأول.
-- إذا طلب وضعها بعد زر معين بالاسم، ابحث عن فهرسه واستخدمه.
-- إذا طلب إبقاء الأزرار الحالية في مكانها وإضافة الجديدة بموضع محدد، احسب الفهرس الصحيح.
+── قيم action المتاحة ──
+- "add": إضافة أزرار جديدة (الافتراضي).
+- "delete_all": حذف جميع الأزرار الحالية. buttons يكون [].
+- "delete_some": حذف أزرار محددة بفهارسها في delete_indices. buttons يكون [].
+- "delete_then_add": حذف أزرار محددة ثم إضافة جديدة.
 
-قواعد الأزرار:
-- type = "menu": الزر يفتح قائمة فرعية.
-- type = "content": الزر يعرض معلومة مباشرة.
+── متى تستخدم كل action ──
+- إذا قال "احذف جميع الأزرار" أو "امسح كل شيء" → action: "delete_all"
+- إذا قال "احذف زر X" أو "احذف الأول/الثاني..." → action: "delete_some" مع delete_indices
+- إذا قال "استبدل" أو "غير" وذكر أزراراً جديدة → action: "delete_then_add"
+- أي طلب إضافة → action: "add"
 
-قاعدة new_row:
-- new_row = true: الزر يبدأ سطراً جديداً.
-- new_row = false: الزر يُضاف بجانب الزر السابق في نفس السطر.
-- الزر الأول في المجموعة الجديدة دائماً new_row = true.
-- إذا طلب "بنفس السطر" أو "جنباً لجنب": الأول true والباقي false.
-- الأزرار القصيرة: يمكن 2-3 بسطر (new_row: false للثاني والثالث).
+── شرح insert_after_index (لـ action=add أو delete_then_add) ──
+- -1: أضف في النهاية.
+- "start": أضف في البداية.
+- رقم 0..N-1: أضف بعد الزر رقم X.
+- إذا قال "السطر الثاني": احسب الفهرس بعد آخر زر في السطر الأول.
 
-قواعد التحليل:
-- افهم النية من أي وصف طبيعي مهما كان.
-- إذا ذكر موضوعاً (مطعم، متجر، خدمات...) أنشئ أزرار مناسبة له.
-- إذا ذكر عدداً فقط، ابتكر أسماء منطقية.
+── قواعد الأزرار ──
+- type="menu": يفتح قائمة فرعية.
+- type="content": يعرض معلومة مباشرة.
+- new_row=true: الزر في سطر جديد.
+- new_row=false: الزر بجانب السابق في نفس السطر.
+- الزر الأول في المجموعة دائماً new_row=true.
+
+── قواعد التحليل ──
+- افهم النية من أي وصف طبيعي.
+- إذا ذكر موضوعاً (مطعم، متجر...) أنشئ أزرار مناسبة.
 
 أرجع JSON صالح فقط بدون أي نص خارجه."""
 
 def _parse_ai_response(raw: str):
-    """يستخرج قائمة الأزرار وموضع الإدراج من نص JSON."""
+    """يستخرج action والأزرار وموضع الإدراج وقائمة الحذف من JSON."""
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     data = json.loads(raw.strip())
+    action  = data.get("action", "add")
     buttons = data.get("buttons", [])
-    insert = data.get("insert_after_index", -1)
-    return buttons, insert
+    insert  = data.get("insert_after_index", -1)
+    del_idx = data.get("delete_indices", [])
+    return action, buttons, insert, del_idx
 
 async def _call_groq(client: httpx.AsyncClient, prompt: str):
     """يستدعي Groq API."""
@@ -806,12 +832,11 @@ async def _call_gemini(client: httpx.AsyncClient, prompt: str):
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
     return None
 
-async def generate_buttons(user_request: str, current_btns: list = None):
-    """يجرب Groq أولاً ثم Gemini كاحتياط. يُرجع (buttons, insert_after_id, error)."""
+async def process_ai_request(user_request: str, current_btns: list = None):
+    """يجرب Groq أولاً ثم Gemini. يُرجع (action, buttons, insert, del_idx, error)."""
     if not GROQ_API_KEY and not GEMINI_API_KEY:
-        return None, -1, "❌ لم يُعَيَّن أي مفتاح AI (GROQ_API_KEY أو GEMINI_API_KEY)."
+        return None, None, -1, [], "❌ لم يُعَيَّن أي مفتاح AI."
 
-    # ── بناء سياق الأزرار الحالية ─────────────────────────────────
     if current_btns:
         ctx_lines = [f"الأزرار الحالية الموجودة ({len(current_btns)} زر):"]
         for i, b in enumerate(current_btns):
@@ -824,32 +849,28 @@ async def generate_buttons(user_request: str, current_btns: list = None):
     prompt = f"{AI_SYSTEM_PROMPT}\n\n{ctx_text}\n\nطلب المشرف: {user_request}"
 
     async with httpx.AsyncClient() as client:
-        # ── Groq أولاً ────────────────────────────────────────────
         if GROQ_API_KEY:
             try:
                 raw = await _call_groq(client, prompt)
-                buttons, insert = _parse_ai_response(raw)
-                if buttons:
-                    return buttons, insert, None
+                action, buttons, insert, del_idx = _parse_ai_response(raw)
+                return action, buttons, insert, del_idx, None
             except json.JSONDecodeError:
-                return None, -1, "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
+                return None, None, -1, [], "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
             except httpx.HTTPStatusError as e:
                 logging.warning(f"Groq error {e.response.status_code}: {e.response.text[:200]}")
             except Exception as e:
                 logging.warning(f"Groq exception: {e}")
-        # ── Gemini احتياط ─────────────────────────────────────────
         if GEMINI_API_KEY:
             try:
                 raw = await _call_gemini(client, prompt)
                 if raw:
-                    buttons, insert = _parse_ai_response(raw)
-                    if buttons:
-                        return buttons, insert, None
+                    action, buttons, insert, del_idx = _parse_ai_response(raw)
+                    return action, buttons, insert, del_idx, None
             except json.JSONDecodeError:
-                return None, -1, "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
+                return None, None, -1, [], "⚠️ لم أتمكن من تفسير رد الذكاء الاصطناعي. حاول مرة أخرى."
             except Exception as e:
                 logging.warning(f"Gemini exception: {e}")
-    return None, -1, "⚠️ تعذّر الاتصال بالذكاء الاصطناعي. حاول مرة أخرى."
+    return None, None, -1, [], "⚠️ تعذّر الاتصال بالذكاء الاصطناعي. حاول مرة أخرى."
 
 # ── إعداد البوت ──────────────────────────────────────────────────
 async def post_init(app):
