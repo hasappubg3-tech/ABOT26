@@ -489,7 +489,7 @@ async def on_message(update: Update, ctx):
         t = ctx.user_data.get("new_type"); add_pid = ctx.user_data.get("add_pid")
         add_after = ctx.user_data.get("add_after", "END")
         if add_after != "END":
-            bid = add_btn_after(add_after, add_pid, t, text)
+            bid = add_btn_after(add_after, add_pid, t, text, new_row=0)
         else:
             bid = add_btn(add_pid, t, text)
         ctx.user_data.pop("state", None); ctx.user_data.pop("new_type", None)
