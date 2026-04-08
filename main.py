@@ -37,6 +37,27 @@ BTN_PLUS = "➕"
 SPECIAL_BTNS = {BTN_BACK, BTN_ADD, BTN_MANAGE, BTN_ADMINS, BTN_CANCEL, BTN_SWAP, BTN_PLUS,
                 "📂 قائمة", "📄 محتوى"}
 
+_PZ = "\u200b"  # صفر — غير مرئي
+_PO = "\u200c"  # واحد — غير مرئي
+
+def _plus_label(bid: int) -> str:
+    """يُنشئ نص زر ➕ يحتوي رقم الزر مخفياً بأحرف غير مرئية."""
+    bits = format(bid, 'b')
+    return BTN_PLUS + ''.join(_PO if b == '1' else _PZ for b in bits)
+
+def _parse_plus(text: str):
+    """يُعيد bid إذا كان النص زر ➕ مشفّر، وإلا None."""
+    if not text.startswith(BTN_PLUS):
+        return None
+    encoded = text[len(BTN_PLUS):]
+    if not encoded:
+        return None
+    try:
+        bits = ''.join('1' if c == _PO else '0' for c in encoded)
+        return int(bits, 2)
+    except Exception:
+        return None
+
 # ── قاعدة البيانات ────────────────────────────────────────────────
 def db():
     c = sqlite3.connect(DB)
@@ -297,17 +318,19 @@ def build_kb(uid, pid=None):
     admin = is_admin(uid)
     rows = []
     current_row = []
+    last_bid_in_row = None
     for i, b in enumerate(btns):
         if i > 0 and b.get('new_row', 1):
             if current_row:
-                if admin:
-                    current_row.append(KeyboardButton(BTN_PLUS))
+                if admin and last_bid_in_row is not None:
+                    current_row.append(KeyboardButton(_plus_label(last_bid_in_row)))
                 rows.append(current_row)
             current_row = []
         current_row.append(KeyboardButton(b['label']))
+        last_bid_in_row = b['id']
     if current_row:
-        if admin:
-            current_row.append(KeyboardButton(BTN_PLUS))
+        if admin and last_bid_in_row is not None:
+            current_row.append(KeyboardButton(_plus_label(last_bid_in_row)))
         rows.append(current_row)
     if admin and not btns:
         rows.append([KeyboardButton(BTN_PLUS)])
@@ -631,9 +654,15 @@ async def on_message(update: Update, ctx):
 
     # ── أزرار المشرف ──────────────────────────────────────────────
     if is_admin(uid):
-        if text == BTN_PLUS:
-            ctx.user_data["add_pid"] = pid
-            ctx.user_data.pop("add_after", None)
+        if text.startswith(BTN_PLUS):
+            after_bid = _parse_plus(text)
+            if after_bid is not None:
+                b = get_btn(after_bid)
+                ctx.user_data["add_pid"] = b["parent_id"] if b else pid
+                ctx.user_data["add_after"] = after_bid
+            else:
+                ctx.user_data["add_pid"] = pid
+                ctx.user_data.pop("add_after", None)
             await set_panel(ctx, chat_id, "اختر نوع الزر الجديد:", kb_add_type())
             return
         if text == BTN_SWAP:
