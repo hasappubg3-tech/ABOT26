@@ -29,18 +29,19 @@ def _load_gemini_keys():
 
 GEMINI_KEYS = _load_gemini_keys()
 
-BTN_BACK   = "🔙 رجوع"
-BTN_ADD    = "➕ إضافة"
-BTN_MANAGE = "⚙️ إدارة"
-BTN_ADMINS = "👥 مشرفون"
-BTN_CANCEL = "❌ إلغاء"
+BTN_BACK     = "🔙 رجوع"
+BTN_ADD      = "➕ إضافة"
+BTN_MANAGE   = "⚙️ إدارة"
+BTN_ADMINS   = "👥 مشرفون"
+BTN_CANCEL   = "❌ إلغاء"
+BTN_SETTINGS = "⚙️ الاعدادات"
 
 BTN_SWAP = "🔀 تغيير"
 
 ADMIN_BTNS   = {BTN_ADMINS}
 BTN_PLUS = "➕"
 SPECIAL_BTNS = {BTN_BACK, BTN_ADD, BTN_MANAGE, BTN_ADMINS, BTN_CANCEL, BTN_SWAP, BTN_PLUS,
-                "📂 قائمة", "📄 محتوى"}
+                BTN_SETTINGS, "📂 قائمة", "📄 محتوى"}
 
 _SUP_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 _SUP_MAP    = {c: str(i) for i, c in enumerate(_SUP_DIGITS)}
@@ -343,7 +344,7 @@ def build_kb(uid, pid=None):
     if pid is not None:
         rows.append([KeyboardButton(BTN_BACK)])
     if admin:
-        rows.append([KeyboardButton(BTN_ADMINS)])
+        rows.append([KeyboardButton(BTN_SETTINGS)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True) if (rows or admin) else None
 
 # ── لوحات Inline ─────────────────────────────────────────────────
@@ -457,7 +458,35 @@ def kb_admins_inline():
             InlineKeyboardButton("🗑", callback_data=f"da_{a['id']}"),
         ])
     rows.append([InlineKeyboardButton("➕ إضافة مشرف", callback_data="aa")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="st_back")])
     return InlineKeyboardMarkup(rows)
+
+def kb_settings():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 المشرفون",      callback_data="st_admins")],
+        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="st_backup")],
+        [InlineKeyboardButton("📊 الإحصائيات",   callback_data="st_stats")],
+    ])
+
+def get_stats() -> str:
+    with db() as c:
+        total   = c.execute("SELECT COUNT(*) FROM buttons").fetchone()[0]
+        menus   = c.execute("SELECT COUNT(*) FROM buttons WHERE type='menu'").fetchone()[0]
+        content = c.execute("SELECT COUNT(*) FROM buttons WHERE type='content'").fetchone()[0]
+        items   = c.execute("SELECT COUNT(*) FROM content_items").fetchone()[0]
+        admins  = c.execute("SELECT COUNT(*) FROM admins").fetchone()[0]
+    media_count = len([f for f in os.listdir(MEDIA_DIR) if os.path.isfile(os.path.join(MEDIA_DIR, f))]) if os.path.isdir(MEDIA_DIR) else 0
+    db_size_kb  = round(os.path.getsize(DB) / 1024, 1) if os.path.exists(DB) else 0
+    return (
+        "📊 *إحصائيات البوت*\n\n"
+        f"📂 قوائم: `{menus}`\n"
+        f"📄 أزرار محتوى: `{content}`\n"
+        f"🗂 إجمالي الأزرار: `{total}`\n"
+        f"🖼 عناصر محتوى: `{items}`\n"
+        f"📁 ملفات محفوظة: `{media_count}`\n"
+        f"👥 المشرفون: `{admins}`\n"
+        f"💾 حجم قاعدة البيانات: `{db_size_kb} KB`"
+    )
 
 def kb_cancel_inline():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="cancel")]])
@@ -821,8 +850,8 @@ async def on_message(update: Update, ctx):
             else:
                 await set_panel(ctx, chat_id, "🔀 *اختر الزر الأول:*", kb_swap_select(pid))
             return
-        if text == BTN_ADMINS:
-            await set_panel(ctx, chat_id, f"👥 *المشرفون* ({len(all_admins())}):", kb_admins_inline())
+        if text == BTN_SETTINGS:
+            await set_panel(ctx, chat_id, "⚙️ *الاعدادات*", kb_settings())
             return
 
     # ── ضغط زر من القائمة ─────────────────────────────────────────
@@ -868,6 +897,32 @@ async def cb_manage(update: Update, ctx):
     if d == "cancel":
         ctx.user_data.pop("state", None)
         await q.edit_message_text("✅ تم الإلغاء."); return
+
+    # ── لوحة الاعدادات ────────────────────────────────────────────
+    if d == "st_admins":
+        await q.edit_message_text(
+            f"👥 *المشرفون* ({len(all_admins())}):",
+            parse_mode="Markdown",
+            reply_markup=kb_admins_inline()
+        )
+        return
+
+    if d == "st_backup":
+        await q.edit_message_text("⏳ جاري إنشاء النسخة الاحتياطية...")
+        await send_backup(ctx.bot, q.from_user.id)
+        return
+
+    if d == "st_stats":
+        await q.edit_message_text(get_stats(), parse_mode="Markdown",
+                                  reply_markup=InlineKeyboardMarkup([[
+                                      InlineKeyboardButton("🔙 رجوع", callback_data="st_back")
+                                  ]]))
+        return
+
+    if d == "st_back":
+        await q.edit_message_text("⚙️ *الاعدادات*", parse_mode="Markdown",
+                                  reply_markup=kb_settings())
+        return
 
     # ── حذف الكل ──────────────────────────────────────────────────
     if d.startswith("delall_"):
