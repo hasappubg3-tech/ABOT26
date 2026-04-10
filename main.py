@@ -166,6 +166,13 @@ def init_db():
                 new_users INTEGER DEFAULT 0
             );
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_button_clicks (
+                user_id   INTEGER NOT NULL,
+                button_id INTEGER NOT NULL,
+                PRIMARY KEY (user_id, button_id)
+            );
+        """)
         c.commit()
 
 def is_admin(uid):
@@ -428,10 +435,28 @@ def add_btn_after(after_bid, pid, t, label, new_row=1):
 def upd_btn_label(bid, label):
     c = db(); c.execute("UPDATE buttons SET label=? WHERE id=?", (label, bid)); c.commit(); c.close()
 
-def inc_click_count(bid):
+def inc_click_count(bid, uid=None):
     c = db()
-    c.execute("UPDATE buttons SET click_count=COALESCE(click_count,0)+1 WHERE id=?", (bid,))
+    if uid is not None:
+        try:
+            c.execute("INSERT INTO user_button_clicks(user_id, button_id) VALUES(?,?)", (uid, bid))
+            c.execute("UPDATE buttons SET click_count=COALESCE(click_count,0)+1 WHERE id=?", (bid,))
+        except Exception:
+            pass  # المستخدم ضغط من قبل، لا نعدّ مرة ثانية
+    else:
+        c.execute("UPDATE buttons SET click_count=COALESCE(click_count,0)+1 WHERE id=?", (bid,))
     c.commit(); c.close()
+
+def get_btn_path(bid) -> str:
+    """يُرجع المسار الكامل للزر: قسم1 ‹ قسم2 ‹ اسم الزر"""
+    parts = []
+    current = get_btn(bid)
+    while current:
+        parts.append(current["label"])
+        pid = current.get("parent_id")
+        current = get_btn(pid) if pid else None
+    parts.reverse()
+    return " › ".join(parts)
 
 def _create_nested_buttons(parent_id, buttons_list, anchor_id=None, use_after=False):
     """ينشئ قائمة أزرار داخل parent_id بشكل متداخل (يدعم children)."""
@@ -932,6 +957,22 @@ def get_trending_page(page: int, page_size: int = 10):
     ).fetchone()[0]
     return [dict(r) for r in rows], total
 
+_TYPE_ICON = {"text": "📝", "photo": "🖼", "video": "🎬", "file": "📁", "audio": "🎵"}
+
+def _content_summary(bid) -> str:
+    """يُرجع ملخص أنواع المحتوى داخل الزر مثل: 🖼×2 🎬×1"""
+    rows = db().execute(
+        "SELECT type, COUNT(*) as cnt FROM content_items WHERE button_id=? GROUP BY type", (bid,)
+    ).fetchall()
+    if not rows:
+        return "📭"
+    parts = []
+    for r in rows:
+        icon = _TYPE_ICON.get(r["type"], "📄")
+        cnt = r["cnt"]
+        parts.append(f"{icon}×{cnt}" if cnt > 1 else icon)
+    return " ".join(parts)
+
 def build_trending_text(page: int, page_size: int = 10) -> tuple:
     """يبني النص ولوحة التنقل للترند. يُرجع (text, markup)."""
     btns, total = get_trending_page(page, page_size)
@@ -944,9 +985,11 @@ def build_trending_text(page: int, page_size: int = 10) -> tuple:
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         for i, b in enumerate(btns, start=start):
             rank = i
-            icon = medals.get(rank, f"`{rank}`.")
-            lines.append(f"{icon} *{b['label']}* — `{b['click_count']}` طلب")
-        text = f"🔥 *الملفات الترند* — صفحة {page+1}/{total_pages}\n\n" + "\n".join(lines)
+            icon = medals.get(rank, f"{rank}\\.")
+            path = get_btn_path(b["id"])
+            content_sum = _content_summary(b["id"])
+            lines.append(f"{icon} {content_sum} `{b['click_count']}` طلب\n_📍 {path}_")
+        text = f"🔥 *الملفات الترند* — صفحة {page+1}/{total_pages}\n\n" + "\n\n".join(lines)
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"st_trending_{page-1}"))
@@ -1025,7 +1068,7 @@ async def send_items(m, bid, uid=None, bot=None):
         await m.reply_text("📭 لا يوجد محتوى بعد.")
         return
     if uid and not is_admin(uid):
-        inc_click_count(bid)
+        inc_click_count(bid, uid)
     b = get_btn(bid)
     no_cap = (b.get("no_caption", 0) or 0) if b else 0
     extra_cap = get_global_caption() if not no_cap else ""
