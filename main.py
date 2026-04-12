@@ -212,6 +212,38 @@ def init_db():
             c.commit()
         except Exception:
             pass
+        try:
+            c.execute("ALTER TABLE buttons ADD COLUMN random_quiz INTEGER DEFAULT 0")
+            c.commit()
+        except Exception:
+            pass
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_questions (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                button_id INTEGER NOT NULL REFERENCES buttons(id) ON DELETE CASCADE,
+                question  TEXT NOT NULL,
+                correct_option INTEGER DEFAULT 0,
+                explanation    TEXT DEFAULT '',
+                ord       INTEGER DEFAULT 0
+            );
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_options (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_id INTEGER NOT NULL REFERENCES quiz_questions(id) ON DELETE CASCADE,
+                text        TEXT NOT NULL,
+                ord         INTEGER DEFAULT 0
+            );
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_sent_log (
+                user_id     INTEGER NOT NULL,
+                question_id INTEGER NOT NULL,
+                sent_at     INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, question_id)
+            );
+        """)
+        c.commit()
         c.execute("""
             CREATE TABLE IF NOT EXISTS button_ratings (
                 button_id INTEGER NOT NULL,
@@ -305,6 +337,80 @@ def toggle_btn_unified_rating(bid):
     c.execute("UPDATE buttons SET unified_rating=? WHERE id=?", (new_val, bid))
     c.commit(); c.close()
     return bool(new_val)
+
+# ── كويز: دوال قاعدة البيانات ─────────────────────────────────────
+def add_quiz_question(bid, question, explanation=""):
+    c = db()
+    ids = c.execute("SELECT id FROM quiz_questions WHERE button_id=?", (bid,)).fetchall()
+    c.execute(
+        "INSERT INTO quiz_questions(button_id,question,correct_option,explanation,ord) VALUES(?,?,?,?,?)",
+        (bid, question, 0, explanation, len(ids)+1)
+    )
+    qid = c.lastrowid; c.commit(); c.close()
+    return qid
+
+def get_quiz_questions(bid):
+    return [dict(r) for r in db().execute(
+        "SELECT * FROM quiz_questions WHERE button_id=? ORDER BY ord,id", (bid,)).fetchall()]
+
+def get_quiz_question(qid):
+    r = db().execute("SELECT * FROM quiz_questions WHERE id=?", (qid,)).fetchone()
+    return dict(r) if r else None
+
+def del_quiz_question(qid):
+    c = db(); c.execute("DELETE FROM quiz_questions WHERE id=?", (qid,)); c.commit(); c.close()
+
+def add_quiz_option(qid, text):
+    c = db()
+    ids = c.execute("SELECT id FROM quiz_options WHERE question_id=?", (qid,)).fetchall()
+    c.execute("INSERT INTO quiz_options(question_id,text,ord) VALUES(?,?,?)", (qid, text, len(ids)+1))
+    oid = c.lastrowid; c.commit(); c.close()
+    return oid
+
+def get_quiz_options(qid):
+    return [dict(r) for r in db().execute(
+        "SELECT * FROM quiz_options WHERE question_id=? ORDER BY ord,id", (qid,)).fetchall()]
+
+def del_quiz_option(oid):
+    c = db(); c.execute("DELETE FROM quiz_options WHERE id=?", (oid,)); c.commit(); c.close()
+
+def set_correct_option(qid, option_idx):
+    c = db()
+    c.execute("UPDATE quiz_questions SET correct_option=? WHERE id=?", (option_idx, qid))
+    c.commit(); c.close()
+
+def toggle_random_quiz(bid):
+    b = get_btn(bid)
+    if not b: return False
+    current = b.get("random_quiz", 0) or 0
+    new_val = 0 if current else 1
+    c = db()
+    c.execute("UPDATE buttons SET random_quiz=? WHERE id=?", (new_val, bid))
+    c.commit(); c.close()
+    return bool(new_val)
+
+def log_question_sent(uid, qid):
+    import time as _time
+    c = db()
+    c.execute(
+        "INSERT OR REPLACE INTO quiz_sent_log(user_id,question_id,sent_at) VALUES(?,?,?)",
+        (uid, qid, int(_time.time()))
+    )
+    c.commit(); c.close()
+
+def get_next_random_question(bid, uid):
+    import random, time as _time
+    one_hour_ago = int(_time.time()) - 3600
+    questions = get_quiz_questions(bid)
+    if not questions: return None
+    sent_ids = {r[0] for r in db().execute(
+        "SELECT question_id FROM quiz_sent_log WHERE user_id=? AND sent_at>?",
+        (uid, one_hour_ago)
+    ).fetchall()}
+    available = [q for q in questions if q["id"] not in sent_ids]
+    if not available:
+        available = questions
+    return random.choice(available)
 
 def get_caption_buttons():
     return [dict(r) for r in db().execute(
@@ -1052,7 +1158,7 @@ async def send_file_item(target, item, reply_markup=None, extra_caption=""):
     return await _send_from_local()
 
 # ── بناء لوحة مفاتيح الرد ────────────────────────────────────────
-ICON = {"menu": "📂", "content": "📄", "special": "⭐"}
+ICON = {"menu": "📂", "content": "📄", "special": "⭐", "quiz": "📊"}
 
 def build_kb(uid, pid=None):
     btns = get_buttons(pid)
@@ -1128,11 +1234,75 @@ def kb_add_where(pid):
         [InlineKeyboardButton("❌ إلغاء", callback_data="pt_cancel")],
     ])
 
+# ── كويز: دوال الكيبورد ───────────────────────────────────────────
+def kb_quiz_panel(bid):
+    b = get_btn(bid)
+    questions = get_quiz_questions(bid)
+    random_q = (b.get("random_quiz", 0) or 0) if b else 0
+    rows = []
+    if questions:
+        rows.append([InlineKeyboardButton(f"📋 الأسئلة ({len(questions)})", callback_data=f"qz_list_{bid}")])
+    rows.append([InlineKeyboardButton("➕ إضافة سؤال", callback_data=f"qz_add_{bid}")])
+    rand_label = "🔀 إلغاء التوزيع العشوائي" if random_q else "🔀 تفعيل التوزيع العشوائي"
+    rows.append([InlineKeyboardButton(rand_label, callback_data=f"qz_toggle_rand_{bid}")])
+    rows.append([InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"el_{bid}")])
+    rows.append([InlineKeyboardButton("🗑 حذف الزر", callback_data=f"confirm_x_{bid}")])
+    pid = b["parent_id"] if b else None
+    rows.append([InlineKeyboardButton("رجوع", callback_data="m_r" if pid is None else f"m_{pid}")])
+    return InlineKeyboardMarkup(rows)
+
+def kb_quiz_quick(bid):
+    b = get_btn(bid)
+    questions = get_quiz_questions(bid)
+    random_q = (b.get("random_quiz", 0) or 0) if b else 0
+    rows = []
+    if questions:
+        rows.append([InlineKeyboardButton(f"📋 الأسئلة ({len(questions)})", callback_data=f"qz_list_{bid}")])
+    rows.append([InlineKeyboardButton("➕ إضافة سؤال", callback_data=f"qz_add_{bid}")])
+    rand_label = "🔀 إلغاء التوزيع العشوائي" if random_q else "🔀 تفعيل التوزيع العشوائي"
+    rows.append([InlineKeyboardButton(rand_label, callback_data=f"qz_toggle_rand_{bid}")])
+    rows.append([InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"el_{bid}")])
+    rows.append([InlineKeyboardButton("🗑 حذف", callback_data=f"confirm_x_{bid}")])
+    return InlineKeyboardMarkup(rows)
+
+def kb_quiz_question_list(bid):
+    questions = get_quiz_questions(bid)
+    rows = []
+    for q in questions:
+        opts = get_quiz_options(q["id"])
+        status = "✅" if len(opts) >= 2 else "⚠️"
+        rows.append([InlineKeyboardButton(
+            f"{status} {q['question'][:35]}", callback_data=f"qz_q_{q['id']}"
+        )])
+    rows.append([InlineKeyboardButton("➕ إضافة سؤال", callback_data=f"qz_add_{bid}")])
+    rows.append([InlineKeyboardButton("رجوع", callback_data=f"qz_panel_{bid}")])
+    return InlineKeyboardMarkup(rows)
+
+def kb_quiz_question_manage(qid):
+    q = get_quiz_question(qid)
+    if not q: return InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="noop")]])
+    opts = get_quiz_options(qid)
+    rows = []
+    for i, opt in enumerate(opts):
+        is_correct = (i == q["correct_option"])
+        icon = "✅" if is_correct else "◯"
+        rows.append([
+            InlineKeyboardButton(f"{icon} {opt['text'][:25]}", callback_data=f"qz_setcorrect_{qid}_{i}"),
+            InlineKeyboardButton("🗑", callback_data=f"qz_delopt_{opt['id']}_{qid}"),
+        ])
+    rows.append([InlineKeyboardButton("➕ إضافة خيار", callback_data=f"qz_addopt_{qid}")])
+    rows.append([InlineKeyboardButton("🗑 حذف السؤال", callback_data=f"qz_delq_{qid}")])
+    rows.append([InlineKeyboardButton("رجوع", callback_data=f"qz_list_{q['button_id']}")])
+    return InlineKeyboardMarkup(rows)
+
 def kb_add_type():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📂 قائمة", callback_data="pt_m"),
             InlineKeyboardButton("📄 محتوى", callback_data="pt_c"),
+        ],
+        [
+            InlineKeyboardButton("📊 كويز", callback_data="pt_q"),
         ],
         [
             InlineKeyboardButton("⭐ مميز (للمشرفين فقط)", callback_data="pt_s"),
@@ -1685,6 +1855,37 @@ async def send_items(m, bid, uid=None, bot=None):
     if uid and not is_admin(uid) and unified and not ratings_hidden:
         await send_btn_unified_rating_message(m, bid, uid=uid)
 
+# ── إرسال سؤال كويز للمستخدم ─────────────────────────────────────
+async def send_quiz(m, bid, uid=None, bot=None):
+    b = get_btn(bid)
+    random_q = (b.get("random_quiz", 0) or 0) if b else 0
+    if random_q and uid:
+        question = get_next_random_question(bid, uid)
+    else:
+        questions = get_quiz_questions(bid)
+        question = questions[0] if questions else None
+    if not question:
+        await m.reply_text("📭 لا يوجد أسئلة بعد.")
+        return
+    opts = get_quiz_options(question["id"])
+    if len(opts) < 2:
+        await m.reply_text("⚠️ السؤال غير مكتمل (يحتاج خيارين على الأقل).")
+        return
+    correct_idx = question.get("correct_option", 0)
+    if correct_idx >= len(opts):
+        correct_idx = 0
+    explanation = question.get("explanation", "") or ""
+    await m.reply_poll(
+        question=question["question"],
+        options=[opt["text"] for opt in opts],
+        type="quiz",
+        correct_option_id=correct_idx,
+        explanation=explanation if explanation else None,
+        is_anonymous=False,
+    )
+    if uid and random_q:
+        log_question_sent(uid, question["id"])
+
 # ── /start ────────────────────────────────────────────────────────
 async def cmd_start(update: Update, ctx):
     uid = update.effective_user.id
@@ -1739,6 +1940,10 @@ async def on_message(update: Update, ctx):
             await set_panel(ctx, chat_id,
                             f"⭐ *{text}*\n🔢 رقم الزر (ID): `{bid}`\n\n_هذا الزر مخصص — سلوكه يُحدَّد برمجياً._",
                             kb_special_manage(bid))
+        elif t == "quiz":
+            await set_panel(ctx, chat_id,
+                            f"📊 *{text}*\n\nلا يوجد أسئلة بعد. اضغط ➕ لإضافة سؤال.",
+                            kb_quiz_panel(bid))
         return
 
     # ── انتظار محتوى جديد لزر موجود ──────────────────────────────
@@ -1841,6 +2046,39 @@ async def on_message(update: Update, ctx):
                         kb_caption_btn_settings())
         await m.reply_text(f"✅ تمت إضافة الزر: *{label}*", parse_mode="Markdown",
                            reply_markup=build_kb(uid, pid))
+        return
+
+    # ── انتظار نص سؤال كويز جديد ────────────────────────────────
+    if state == "wait_quiz_question":
+        if not m.text or m.text in SPECIAL_BTNS:
+            await m.reply_text("⚠️ أرسل نصاً صحيحاً للسؤال."); return
+        bid = ctx.user_data.pop("quiz_bid", None)
+        ctx.user_data.pop("state", None)
+        if not bid: return
+        qid = add_quiz_question(bid, m.text)
+        b = get_btn(bid)
+        await set_panel(ctx, chat_id,
+                        f"📊 *{b['label'] if b else 'كويز'}*\n\n✅ تم إضافة السؤال.\nالآن أضف الخيارات وحدد الإجابة الصحيحة.",
+                        kb_quiz_question_manage(qid))
+        await m.reply_text(f"✅ تم إضافة السؤال:\n_{m.text}_\n\nالآن أضف الخيارات.",
+                           parse_mode="Markdown", reply_markup=build_kb(uid, pid))
+        return
+
+    # ── انتظار نص خيار لسؤال كويز ────────────────────────────────
+    if state == "wait_quiz_option":
+        if not m.text or m.text in SPECIAL_BTNS:
+            await m.reply_text("⚠️ أرسل نصاً صحيحاً للخيار."); return
+        qid = ctx.user_data.pop("quiz_qid", None)
+        ctx.user_data.pop("state", None)
+        if not qid: return
+        add_quiz_option(qid, m.text)
+        q = get_quiz_question(qid)
+        opts = get_quiz_options(qid)
+        await set_panel(ctx, chat_id,
+                        f"📊 *السؤال:* {q['question'] if q else ''}\n_{len(opts)} خيار_ — اضغط على الخيار لتحديده كإجابة صحيحة ✅",
+                        kb_quiz_question_manage(qid))
+        await m.reply_text(f"✅ تمت إضافة الخيار: _{m.text}_",
+                           parse_mode="Markdown", reply_markup=build_kb(uid, pid))
         return
 
     # ── انتظار نص رسالة الاشتراك (النظام 1) ─────────────────────
@@ -2302,6 +2540,15 @@ async def on_message(update: Update, ctx):
                             kb_content_quick(b["id"]))
         else:
             await send_items(m, b["id"], uid=uid, bot=ctx.bot)
+
+    elif b["type"] == "quiz":
+        if is_admin(uid):
+            questions = get_quiz_questions(b["id"])
+            await set_panel(ctx, chat_id,
+                            f"📊 *{b['label']}*\n_{len(questions)} سؤال_",
+                            kb_quiz_quick(b["id"]))
+        else:
+            await send_quiz(m, b["id"], uid=uid, bot=ctx.bot)
 
     elif b["type"] == "special":
         action = b.get("special_action")
@@ -3203,6 +3450,11 @@ async def cb_manage(update: Update, ctx):
             items = get_items(bid)
             await q.edit_message_text(f"📄 *{b['label']}*\n_{len(items)} عنصر_",
                                       parse_mode="Markdown", reply_markup=kb_content_panel(bid))
+        elif b["type"] == "quiz":
+            questions = get_quiz_questions(bid)
+            await q.edit_message_text(
+                f"📊 *{b['label']}*\n_{len(questions)} سؤال_",
+                parse_mode="Markdown", reply_markup=kb_quiz_panel(bid))
         elif b["type"] == "special":
             action = b.get("special_action")
             if action == "container":
@@ -3216,6 +3468,120 @@ async def cb_manage(update: Update, ctx):
         else:
             await q.edit_message_text(f"📂 *{b['label']}*", parse_mode="Markdown",
                                       reply_markup=kb_edit_menu_btn(bid))
+        return
+
+    # ── إدارة الكويز ──────────────────────────────────────────────
+    if d.startswith("qz_"):
+        await q.answer()
+
+        if d.startswith("qz_panel_"):
+            bid = int(d[9:])
+            b = get_btn(bid)
+            questions = get_quiz_questions(bid)
+            await q.edit_message_text(
+                f"📊 *{b['label'] if b else 'كويز'}*\n_{len(questions)} سؤال_",
+                parse_mode="Markdown", reply_markup=kb_quiz_panel(bid))
+            return
+
+        if d.startswith("qz_list_"):
+            bid = int(d[8:])
+            b = get_btn(bid)
+            questions = get_quiz_questions(bid)
+            text = f"📋 *أسئلة: {b['label'] if b else 'كويز'}*\n_{len(questions)} سؤال_\n\n⚠️ = يحتاج خيارات | ✅ = جاهز"
+            await q.edit_message_text(text, parse_mode="Markdown",
+                                      reply_markup=kb_quiz_question_list(bid))
+            return
+
+        if d.startswith("qz_add_"):
+            bid = int(d[7:])
+            ctx.user_data["state"] = "wait_quiz_question"
+            ctx.user_data["quiz_bid"] = bid
+            await q.edit_message_text(
+                "📊 *إضافة سؤال كويز*\n\nأرسل نص السؤال:",
+                parse_mode="Markdown",
+                reply_markup=kb_cancel_inline()
+            )
+            return
+
+        if d.startswith("qz_q_"):
+            qid = int(d[5:])
+            q_obj = get_quiz_question(qid)
+            if not q_obj:
+                await q.answer("⚠️ السؤال غير موجود.", show_alert=True); return
+            opts = get_quiz_options(qid)
+            text = (
+                f"📊 *السؤال:*\n{q_obj['question']}\n\n"
+                f"_{len(opts)} خيار_\n\n"
+                "اضغط على خيار لجعله الإجابة الصحيحة ✅\nاضغط 🗑 لحذف الخيار."
+            )
+            await q.edit_message_text(text, parse_mode="Markdown",
+                                      reply_markup=kb_quiz_question_manage(qid))
+            return
+
+        if d.startswith("qz_addopt_"):
+            qid = int(d[10:])
+            ctx.user_data["state"] = "wait_quiz_option"
+            ctx.user_data["quiz_qid"] = qid
+            await q.edit_message_text(
+                "✏️ أرسل نص الخيار الجديد:",
+                reply_markup=kb_cancel_inline()
+            )
+            return
+
+        if d.startswith("qz_setcorrect_"):
+            parts = d[14:].split("_")
+            qid = int(parts[0]); opt_idx = int(parts[1])
+            set_correct_option(qid, opt_idx)
+            q_obj = get_quiz_question(qid)
+            opts = get_quiz_options(qid)
+            await q.edit_message_text(
+                f"📊 *السؤال:*\n{q_obj['question']}\n\n_{len(opts)} خيار_ — ✅ الإجابة الصحيحة محددة",
+                parse_mode="Markdown",
+                reply_markup=kb_quiz_question_manage(qid)
+            )
+            return
+
+        if d.startswith("qz_delopt_"):
+            rest = d[10:].split("_")
+            oid = int(rest[0]); qid = int(rest[1])
+            del_quiz_option(oid)
+            q_obj = get_quiz_question(qid)
+            opts = get_quiz_options(qid)
+            correct = q_obj.get("correct_option", 0) if q_obj else 0
+            if correct >= len(opts) and opts:
+                set_correct_option(qid, 0)
+            await q.edit_message_text(
+                f"📊 *السؤال:*\n{q_obj['question'] if q_obj else ''}\n\n_{len(opts)} خيار_",
+                parse_mode="Markdown",
+                reply_markup=kb_quiz_question_manage(qid)
+            )
+            return
+
+        if d.startswith("qz_delq_"):
+            qid = int(d[8:])
+            q_obj = get_quiz_question(qid)
+            bid = q_obj["button_id"] if q_obj else None
+            del_quiz_question(qid)
+            if bid:
+                b = get_btn(bid)
+                questions = get_quiz_questions(bid)
+                await q.edit_message_text(
+                    f"✅ تم حذف السؤال.\n\n📊 *{b['label'] if b else 'كويز'}*\n_{len(questions)} سؤال_",
+                    parse_mode="Markdown", reply_markup=kb_quiz_question_list(bid))
+            return
+
+        if d.startswith("qz_toggle_rand_"):
+            bid = int(d[15:])
+            toggle_random_quiz(bid)
+            b = get_btn(bid)
+            questions = get_quiz_questions(bid)
+            random_q = (b.get("random_quiz", 0) or 0) if b else 0
+            status = "✅ التوزيع العشوائي مفعّل — سؤال عشوائي بدون تكرار خلال ساعة" if random_q else "⭕ التوزيع العشوائي مُلغى — يُرسل السؤال الأول دائماً"
+            await q.edit_message_text(
+                f"📊 *{b['label'] if b else 'كويز'}*\n_{len(questions)} سؤال_\n\n{status}",
+                parse_mode="Markdown", reply_markup=kb_quiz_panel(bid))
+            return
+
         return
 
     # ── تبديل موضع زرين ──────────────────────────────────────────
@@ -3310,8 +3676,8 @@ async def cb_manage(update: Update, ctx):
         ctx.user_data["add_pid"] = b["parent_id"] if b else None
         await q.edit_message_text("أين تريد إضافة الزر الجديد؟", reply_markup=kb_add_position(after_bid)); return
 
-    if d in ("pt_m", "pt_c", "pt_s"):
-        t = "menu" if d == "pt_m" else ("content" if d == "pt_c" else "special")
+    if d in ("pt_m", "pt_c", "pt_s", "pt_q"):
+        t = "menu" if d == "pt_m" else ("content" if d == "pt_c" else ("special" if d == "pt_s" else "quiz"))
         ctx.user_data["new_type"] = t
         ctx.user_data["state"] = "wait_label"
         await q.edit_message_text("✏️ اكتب اسم الزر الجديد:", reply_markup=kb_cancel_inline()); return
