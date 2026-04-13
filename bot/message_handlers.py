@@ -36,11 +36,15 @@ async def on_message(update: Update, ctx):
         user = update.effective_user
         username = f"@{user.username}" if user.username else "لا يوجد"
         full_name = user.full_name or "مستخدم"
+        def _escape_md(text: str) -> str:
+            for ch in ("\\", "*", "_", "`", "["):
+                text = text.replace(ch, f"\\{ch}")
+            return text
         header = (
             "📩 *طلب إضافة ملف جديد*\n\n"
-            f"👤 الاسم: *{full_name}*\n"
+            f"👤 الاسم: *{_escape_md(full_name)}*\n"
             f"🆔 الآيدي: `{uid}`\n"
-            f"🔗 اليوزر: {username}\n\n"
+            f"🔗 اليوزر: {_escape_md(username)}\n\n"
             "محتوى الطلب في الرسالة التالية:"
         )
         sent_count = 0
