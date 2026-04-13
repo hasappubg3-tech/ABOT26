@@ -250,11 +250,34 @@ def kb_content_quick(bid):
 
 def kb_special_quick(bid):
     """خيارات سريعة لزر مميز عند ضغط الأدمن عليه من الكيبورد."""
+    b = get_btn(bid)
     rows = [
         [InlineKeyboardButton("✏️ تغيير الاسم", callback_data=f"el_{bid}")],
         [InlineKeyboardButton("🗑 حذف",          callback_data=f"confirm_x_{bid}")],
     ]
+    if b and b.get("special_action") == "file_request":
+        rows.insert(0, [InlineKeyboardButton("👥 مشرفين الملفات", callback_data=f"fr_admins_{bid}")])
     return InlineKeyboardMarkup(rows)
+
+def kb_file_request_admins(bid):
+    admins = get_file_request_admins()
+    rows = []
+    for a in admins:
+        name = a.get("username") or str(a["user_id"])
+        rows.append([
+            InlineKeyboardButton(f"👤 {name}", callback_data="noop"),
+            InlineKeyboardButton("🗑", callback_data=f"fr_admin_del_{bid}_{a['user_id']}")
+        ])
+    if not rows:
+        rows.append([InlineKeyboardButton("لا يوجد مشرفين ملفات حالياً", callback_data="noop")])
+    rows.append([InlineKeyboardButton("➕ إضافة مشرف ملفات", callback_data=f"fr_admin_add_{bid}")])
+    rows.append([InlineKeyboardButton("رجوع", callback_data=f"e_{bid}")])
+    return InlineKeyboardMarkup(rows)
+
+def kb_file_request_cancel():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ إلغاء الطلب", callback_data="fr_cancel")
+    ]])
 
 def kb_special_container_quick(bid):
     """خيارات سريعة لزر مميز حاوية عند ضغط الأدمن عليه."""

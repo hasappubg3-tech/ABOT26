@@ -25,6 +25,55 @@ async def on_message(update: Update, ctx):
 
     track_message(uid)
 
+    if state == "wait_file_request":
+        bid = ctx.user_data.pop("file_request_bid", None)
+        ctx.user_data.pop("state", None)
+        admins = get_file_request_admins()
+        if not admins:
+            admins = [{"user_id": a["id"], "username": a.get("username")} for a in all_admins()]
+        user = update.effective_user
+        username = f"@{user.username}" if user.username else "لا يوجد"
+        full_name = user.full_name or "مستخدم"
+        header = (
+            "📩 *طلب إضافة ملف جديد*\n\n"
+            f"👤 الاسم: *{full_name}*\n"
+            f"🆔 الآيدي: `{uid}`\n"
+            f"🔗 اليوزر: {username}\n\n"
+            "محتوى الطلب في الرسالة التالية:"
+        )
+        sent_count = 0
+        for admin in admins:
+            admin_id = admin["user_id"]
+            try:
+                await ctx.bot.send_message(admin_id, header, parse_mode="Markdown")
+                await ctx.bot.copy_message(
+                    chat_id=admin_id,
+                    from_chat_id=chat_id,
+                    message_id=m.message_id
+                )
+                sent_count += 1
+            except Exception as e:
+                logging.warning(f"file request forward failed to {admin_id}: {e}")
+        if sent_count:
+            await m.reply_text("✅ تم تحويل طلبك للمشرفين وسوف يتم الرد بأسرع وقت.")
+        else:
+            await m.reply_text("⚠️ تعذر تحويل طلبك حالياً. حاول مرة أخرى لاحقاً.")
+        return
+
+    if state == "wait_file_admin_id":
+        if not m.text:
+            await m.reply_text("⚠️ أرسل آيدي مشرف الملفات كرقم."); return
+        try:
+            target_id = int(m.text.strip())
+        except Exception:
+            await m.reply_text("⚠️ الآيدي يجب أن يكون رقماً فقط."); return
+        bid = ctx.user_data.pop("file_admin_bid", None)
+        ctx.user_data.pop("state", None)
+        add_file_request_admin(target_id)
+        await set_panel(ctx, chat_id, "👥 *مشرفين الملفات*", kb_file_request_admins(bid))
+        await m.reply_text("✅ تم إضافة مشرف الملفات.", reply_markup=build_kb(uid, pid))
+        return
+
     # ── انتظار اسم الزر ───────────────────────────────────────────
     if state == "wait_label":
         if not text or text in SPECIAL_BTNS:
@@ -702,6 +751,19 @@ async def on_message(update: Update, ctx):
                 await set_panel(ctx, chat_id,
                                 f"⭐ *{b['label']}* (#{b['id']})\n_زر إعدادات التقييمات_",
                                 kb_special_quick(b["id"]))
+        elif action == "file_request":
+            if is_admin(uid):
+                await set_panel(ctx, chat_id,
+                                f"⭐ *{b['label']}* (#{b['id']})\n_زر طلبات إضافة الملفات_",
+                                kb_special_quick(b["id"]))
+            else:
+                ctx.user_data["state"] = "wait_file_request"
+                ctx.user_data["file_request_bid"] = b["id"]
+                await m.reply_text(
+                    "📩 اكتب اسم الملف الذي تريده ينضاف، أو ارسل طلبك بشكل عام.\n\n"
+                    "يمكنك إرسال نص، صورة، ملف، فيديو، أو صوت.",
+                    reply_markup=kb_file_request_cancel()
+                )
         else:
             if is_admin(uid):
                 await set_panel(ctx, chat_id,

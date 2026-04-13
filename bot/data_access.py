@@ -136,6 +136,12 @@ def init_db():
                 PRIMARY KEY (item_id, user_id)
             );
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS file_request_admins (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT
+            );
+        """)
         c.commit()
         try:
             c.execute("ALTER TABLE buttons ADD COLUMN special_action TEXT DEFAULT NULL")
@@ -362,6 +368,24 @@ def get_all_special_btns() -> list:
 def set_btn_special_action(bid, action):
     c = db()
     c.execute("UPDATE buttons SET special_action=? WHERE id=?", (action, bid))
+    c.commit(); c.close()
+
+def get_file_request_admins():
+    return [dict(r) for r in db().execute(
+        "SELECT user_id, username FROM file_request_admins ORDER BY user_id"
+    ).fetchall()]
+
+def add_file_request_admin(uid, username=None):
+    c = db()
+    c.execute(
+        "INSERT OR REPLACE INTO file_request_admins(user_id,username) VALUES(?,?)",
+        (uid, username)
+    )
+    c.commit(); c.close()
+
+def del_file_request_admin(uid):
+    c = db()
+    c.execute("DELETE FROM file_request_admins WHERE user_id=?", (uid,))
     c.commit(); c.close()
 
 def swap_btns(bid1, bid2):

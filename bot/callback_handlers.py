@@ -225,6 +225,16 @@ async def cb_manage(update: Update, ctx):
 
         return
 
+    if d == "fr_cancel":
+        await q.answer()
+        ctx.user_data.pop("state", None)
+        ctx.user_data.pop("file_request_bid", None)
+        try:
+            await q.edit_message_text("✅ تم إلغاء الطلب.")
+        except Exception:
+            pass
+        return
+
     # ── معالجات البومودورو (لجميع المستخدمين) ────────────────────────
     if d.startswith("pom_"):
         await q.answer()
@@ -422,6 +432,38 @@ async def cb_manage(update: Update, ctx):
     pid = ctx.user_data.get("pid")
 
     if d == "noop": return
+
+    if d.startswith("fr_admins_"):
+        bid = int(d[len("fr_admins_"):])
+        await q.edit_message_text(
+            "👥 *مشرفين الملفات*\n\nهؤلاء الأشخاص تصلهم طلبات إضافة الملفات من المستخدمين.",
+            parse_mode="Markdown",
+            reply_markup=kb_file_request_admins(bid)
+        )
+        return
+
+    if d.startswith("fr_admin_add_"):
+        bid = int(d[len("fr_admin_add_"):])
+        ctx.user_data["state"] = "wait_file_admin_id"
+        ctx.user_data["file_admin_bid"] = bid
+        await q.edit_message_text(
+            "➕ *إضافة مشرف ملفات*\n\nأرسل آيدي الشخص الذي تريد أن تصله طلبات الملفات.",
+            parse_mode="Markdown",
+            reply_markup=kb_cancel_inline()
+        )
+        return
+
+    if d.startswith("fr_admin_del_"):
+        parts = d[len("fr_admin_del_"):].split("_")
+        bid = int(parts[0])
+        admin_id = int(parts[1])
+        del_file_request_admin(admin_id)
+        await q.edit_message_text(
+            "👥 *مشرفين الملفات*\n\n✅ تم حذف مشرف الملفات.",
+            parse_mode="Markdown",
+            reply_markup=kb_file_request_admins(bid)
+        )
+        return
 
     if d == "cancel":
         ctx.user_data.pop("state", None)

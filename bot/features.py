@@ -479,4 +479,15 @@ def _setup_pomodoro_feature():
             "INSERT INTO buttons(parent_id,type,label,ord,new_row,special_action) VALUES(?,?,?,?,?,?)",
             (421, "special", "⭐ التقييمات", len(ids)+1, 1, "toggle_ratings")
         )
+    existing_file_request = c.execute(
+        "SELECT id FROM buttons WHERE parent_id=421 AND special_action='file_request' LIMIT 1"
+    ).fetchone()
+    if not existing_file_request:
+        ids = [r[0] for r in c.execute(
+            "SELECT id FROM buttons WHERE parent_id=421 ORDER BY ord,id"
+        ).fetchall()]
+        c.execute(
+            "INSERT INTO buttons(parent_id,type,label,ord,new_row,special_action) VALUES(?,?,?,?,?,?)",
+            (421, "special", "📩 طلب إضافة ملف", len(ids)+1, 1, "file_request")
+        )
     c.commit(); c.close()
