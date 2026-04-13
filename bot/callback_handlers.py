@@ -80,6 +80,20 @@ async def cb_manage(update: Update, ctx):
                     pass
         return
 
+    # ── رد المشرف على المستخدم (زر الرد) ────────────────────────────────
+    if d.startswith("freply_"):
+        if not is_file_supervisor(uid):
+            await q.answer("⛔ غير مصرح.", show_alert=True); return
+        target_uid = int(d[len("freply_"):])
+        ctx.user_data["state"] = f"wait_freply_{target_uid}"
+        await q.answer()
+        await ctx.bot.send_message(
+            uid,
+            f"✏️ أرسل ردك الآن وسيصل للمستخدم مباشرة.\n_(أي نص أو صورة أو ملف)_",
+            parse_mode="Markdown"
+        )
+        return
+
     # ── تقييم الملفات (لجميع المستخدمين) ────────────────────────────────
     if d.startswith("rate_"):
         if d.startswith("rate_open_"):

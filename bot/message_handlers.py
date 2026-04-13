@@ -47,16 +47,21 @@ async def on_message(update: Update, ctx):
             f"🔗 اليوزر: {_escape_md(username)}\n\n"
             "محتوى الطلب في الرسالة التالية:"
         )
+        reply_btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("↩️ رد على المستخدم", callback_data=f"freply_{uid}")
+        ]])
         sent_count = 0
         for admin in admins:
             admin_id = admin["user_id"]
             try:
                 await ctx.bot.send_message(admin_id, header, parse_mode="Markdown")
-                await ctx.bot.copy_message(
+                copied = await ctx.bot.copy_message(
                     chat_id=admin_id,
                     from_chat_id=chat_id,
-                    message_id=m.message_id
+                    message_id=m.message_id,
+                    reply_markup=reply_btn
                 )
+                save_file_reply_session(admin_id, copied.message_id, uid)
                 sent_count += 1
             except Exception as e:
                 logging.warning(f"file request forward failed to {admin_id}: {e}")
@@ -65,6 +70,39 @@ async def on_message(update: Update, ctx):
         else:
             await m.reply_text("⚠️ تعذر تحويل طلبك حالياً. حاول مرة أخرى لاحقاً.")
         return
+
+    # ── رد المشرف على المستخدم (عبر زر الرد) ─────────────────────────
+    if state and state.startswith("wait_freply_"):
+        target_uid = int(state.split("_", 2)[2])
+        ctx.user_data.pop("state", None)
+        try:
+            await ctx.bot.copy_message(
+                chat_id=target_uid,
+                from_chat_id=chat_id,
+                message_id=m.message_id
+            )
+            await m.reply_text("✅ تم إرسال ردك للمستخدم.")
+        except Exception as e:
+            logging.warning(f"file reply to user failed: {e}")
+            await m.reply_text("⚠️ تعذر إرسال الرد للمستخدم.")
+        return
+
+    # ── رد مباشر (Telegram reply) على رسالة المستخدم ─────────────
+    if m.reply_to_message and is_file_supervisor(uid):
+        replied_mid = m.reply_to_message.message_id
+        target_uid = get_file_reply_user(uid, replied_mid)
+        if target_uid:
+            try:
+                await ctx.bot.copy_message(
+                    chat_id=target_uid,
+                    from_chat_id=chat_id,
+                    message_id=m.message_id
+                )
+                await m.reply_text("✅ تم إرسال ردك للمستخدم.")
+            except Exception as e:
+                logging.warning(f"file direct reply to user failed: {e}")
+                await m.reply_text("⚠️ تعذر إرسال الرد للمستخدم.")
+            return
 
     if state == "wait_file_admin_id":
         if not m.text:

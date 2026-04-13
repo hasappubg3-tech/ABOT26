@@ -142,6 +142,14 @@ def init_db():
                 username TEXT
             );
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS file_reply_sessions (
+                admin_id   INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                user_id    INTEGER NOT NULL,
+                PRIMARY KEY (admin_id, message_id)
+            );
+        """)
         c.commit()
         try:
             c.execute("ALTER TABLE buttons ADD COLUMN special_action TEXT DEFAULT NULL")
@@ -392,6 +400,13 @@ def get_file_request_admins():
         "SELECT user_id, username FROM file_request_admins ORDER BY user_id"
     ).fetchall()]
 
+def is_file_supervisor(uid):
+    if is_admin(uid):
+        return True
+    return db().execute(
+        "SELECT 1 FROM file_request_admins WHERE user_id=?", (uid,)
+    ).fetchone() is not None
+
 def add_file_request_admin(uid, username=None):
     c = db()
     c.execute(
@@ -403,6 +418,26 @@ def add_file_request_admin(uid, username=None):
 def del_file_request_admin(uid):
     c = db()
     c.execute("DELETE FROM file_request_admins WHERE user_id=?", (uid,))
+    c.commit(); c.close()
+
+def save_file_reply_session(admin_id, message_id, user_id):
+    c = db()
+    c.execute(
+        "INSERT OR REPLACE INTO file_reply_sessions(admin_id,message_id,user_id) VALUES(?,?,?)",
+        (admin_id, message_id, user_id)
+    )
+    c.commit(); c.close()
+
+def get_file_reply_user(admin_id, message_id):
+    r = db().execute(
+        "SELECT user_id FROM file_reply_sessions WHERE admin_id=? AND message_id=?",
+        (admin_id, message_id)
+    ).fetchone()
+    return r["user_id"] if r else None
+
+def del_file_reply_session(admin_id, message_id):
+    c = db()
+    c.execute("DELETE FROM file_reply_sessions WHERE admin_id=? AND message_id=?", (admin_id, message_id))
     c.commit(); c.close()
 
 def swap_btns(bid1, bid2):
