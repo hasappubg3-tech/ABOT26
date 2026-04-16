@@ -397,11 +397,9 @@ def kb_settings():
     cap_btns = get_caption_buttons()
     notif1_on  = get_setting("notif_enabled", "1") == "1"
     notif1_msg = get_setting("notif_message", "")
-    storage_ch = get_storage_channel_id()
     cap_label    = "✏️ تغيير كليشة الكلام" if global_cap else "📌 كليشة الكلام"
     capbtn_label = f"🔗 كليشة الأزرار ({len(cap_btns)} زر)" if cap_btns else "🔗 كليشة الأزرار"
     notif1_icon  = "✅" if (notif1_on and notif1_msg) else "⭕"
-    storage_label = f"📦 قناة التخزين ✅" if storage_ch else "📦 قناة التخزين ⭕"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 المشرفون",                     callback_data="st_admins")],
         [InlineKeyboardButton("💾 النسخ الاحتياطي",              callback_data="st_backup_menu")],
@@ -409,7 +407,6 @@ def kb_settings():
         [InlineKeyboardButton(cap_label,                         callback_data="st_caption")],
         [InlineKeyboardButton(capbtn_label,                      callback_data="st_capbtn")],
         [InlineKeyboardButton(f"📢 رسالة الاشتراك {notif1_icon}", callback_data="st_notif1")],
-        [InlineKeyboardButton(storage_label,                     callback_data="st_storage_channel")],
         [InlineKeyboardButton("📊 الإحصائيات",                   callback_data="st_stats")],
         [InlineKeyboardButton("🔥 الملفات الترند",                callback_data="st_trending_0")],
         [InlineKeyboardButton("📡 الإذاعة",                       callback_data="st_broadcast")],

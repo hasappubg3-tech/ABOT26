@@ -480,22 +480,6 @@ async def on_message(update: Update, ctx):
                            reply_markup=build_kb(uid, pid))
         return
 
-    # ── انتظار معرّف قناة التخزين ────────────────────────────────
-    if state == "wait_storage_channel":
-        ch = None
-        fo = getattr(m, "forward_origin", None)
-        if fo and getattr(fo, "type", None) == "channel":
-            ch = str(fo.chat.id)
-        elif m.text and m.text.strip() not in SPECIAL_BTNS:
-            ch = m.text.strip()
-        if not ch:
-            await m.reply_text("⚠️ أرسل معرّف القناة أو حوّل أي منشور منها."); return
-        set_setting("storage_channel_id", ch)
-        ctx.user_data.pop("state", None)
-        await set_panel(ctx, chat_id, "⚙️ *الإعدادات*", kb_settings())
-        await m.reply_text(f"✅ تم حفظ قناة التخزين: `{ch}`", parse_mode="Markdown",
-                           reply_markup=build_kb(uid, pid))
-        return
 
     # ── انتظار عدد الضغطات قبل رسالة الاشتراك (النظام 1) ────────────────
     if state == "wait_notif_opens":

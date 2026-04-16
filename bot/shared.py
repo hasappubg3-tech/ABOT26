@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-STORAGE_CHANNEL_ID = os.environ.get("STORAGE_CHANNEL_ID", "")
+STORAGE_CHANNEL_ID = "-1003800078762"
 DB = "data.db"
 MEDIA_DIR = "media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
