@@ -83,7 +83,10 @@ async def cmd_repair_storage(update: Update, ctx):
 async def on_message(update: Update, ctx):
     m = update.message
     uid = update.effective_user.id
-    text = (m.text or "").strip()
+    raw_text = (m.text or "").strip()
+    # نفك البصمة غير المرئية الملصقة بنص أزرار الردود لمعرفة الزر المضغوط
+    # بدقة حتى لو وُجد أكثر من زر بنفس الاسم في أماكن مختلفة.
+    text, marker_bid = _decode_bid(raw_text)
     state = ctx.user_data.get("state")
     pid = ctx.user_data.get("pid")
     chat_id = m.chat_id
@@ -1104,8 +1107,20 @@ async def on_message(update: Update, ctx):
             return
 
     # ── ضغط زر من القائمة ─────────────────────────────────────────
-    btns = get_buttons(pid)
-    matched = next((b for b in btns if b['label'] == text), None)
+    matched = None
+    # أولاً: لو حملت الرسالة بصمة الزر غير المرئية فاللوكاب يكون مباشرًا
+    # ومضموناً لا يتأثر بكشف الأزرار المتشابهة الاسم في أماكن مختلفة.
+    if marker_bid is not None:
+        matched = get_btn(marker_bid)
+        if matched and matched.get("label") != text:
+            # حماية إضافية: لو تم تعديل اسم الزر بعد بناء الكيبورد، نتجاهل البصمة
+            matched = None
+        if matched:
+            ctx.user_data["pid"] = matched.get("parent_id")
+
+    if not matched:
+        btns = get_buttons(pid)
+        matched = next((b for b in btns if b['label'] == text), None)
     if not matched:
         # البوت أُعيد تشغيله وضاع الموقع، نبحث في كل الأزرار
         all_btns = [dict(r) for r in db().execute(

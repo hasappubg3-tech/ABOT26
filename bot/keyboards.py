@@ -13,7 +13,7 @@ def build_kb(uid, pid=None):
                     current_row.append(KeyboardButton(_plus_label(last_bid_in_row)))
                 rows.append(current_row)
             current_row = []
-        current_row.append(KeyboardButton(b['label']))
+        current_row.append(KeyboardButton(b['label'] + _encode_bid(b['id'])))
         last_bid_in_row = b['id']
     if current_row:
         if admin and last_bid_in_row is not None:
@@ -32,6 +32,7 @@ def build_kb(uid, pid=None):
 def is_bot_button_text(text: str, pid=None) -> bool:
     if not text:
         return False
+    text = _strip_bid_markers(text)
     if text in SPECIAL_BTNS or _parse_plus(text) is not None:
         return True
     return any(b["label"] == text for b in get_buttons(pid))
@@ -243,7 +244,7 @@ def build_exam_group_kb(uid, parent_bid):
     topics = get_exam_topics(parent_bid)
     rows = [[KeyboardButton(BTN_EXAM_STATS)]]
     for topic in topics:
-        rows.append([KeyboardButton(topic['label'])])
+        rows.append([KeyboardButton(topic['label'] + _encode_bid(topic['id']))])
     rows.append([KeyboardButton(BTN_BACK), KeyboardButton(BTN_HOME)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
